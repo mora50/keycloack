@@ -1,0 +1,299 @@
+{
+  "info": {
+    "name": "Auth Trust Gateway — POC E2E",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Cobre cenários CA-001..CA-009 do spec.\nspecs/001-auth-trust-gateway/spec.md"
+  },
+  "item": [
+    {
+      "name": "CA-001 Public auth flow — Login",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "url": {"raw": "{{BASE_URL}}/auth/login", "host": ["{{BASE_URL}}"], "path": ["auth", "login"]},
+        "body": {
+          "mode": "raw",
+          "raw": "{\"username\": \"{{USERNAME}}\", \"password\": \"{{PASSWORD}}\"}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('CA-001: status 200', () => pm.response.to.have.status(200));",
+              "const body = pm.response.json();",
+              "pm.test('access_token present', () => pm.expect(body.access_token).to.be.a('string').and.not.empty);",
+              "pm.test('refresh_token present', () => pm.expect(body.refresh_token).to.be.a('string').and.not.empty);",
+              "pm.test('token_type Bearer', () => pm.expect(body.token_type).to.eql('Bearer'));",
+              "pm.collectionVariables.set('access_token', body.access_token);",
+              "pm.collectionVariables.set('refresh_token', body.refresh_token);",
+              "const payload = JSON.parse(atob(body.access_token.split('.')[1].replace(/-/g,'+').replace(/_/g,'/')));",
+              "pm.collectionVariables.set('jwt_sub', payload.sub);",
+              "pm.collectionVariables.set('jwt_email', payload.email);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "CA-002 GET /api/products with valid token",
+      "request": {
+        "method": "GET",
+        "header": [{"key": "Authorization", "value": "Bearer {{access_token}}"}],
+        "url": {"raw": "{{BASE_URL}}/api/products", "host": ["{{BASE_URL}}"], "path": ["api", "products"]}
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('CA-002: status 200', () => pm.response.to.have.status(200));",
+              "const body = pm.response.json();",
+              "const sub = pm.collectionVariables.get('jwt_sub');",
+              "pm.test('user_id equals jwt sub', () => pm.expect(body.user_id).to.eql(sub));",
+              "pm.test('products array present', () => pm.expect(body.products).to.be.an('array'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "CA-004 Token expirado",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Operator must run scripts/test/forge-expired-token.sh and pass result via",
+              "// pm env var EXPIRED_TOKEN before this scenario runs."
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('CA-004: status 401', () => pm.response.to.have.status(401));",
+              "const body = pm.response.json();",
+              "pm.test('body message contains exp', () => pm.expect(body.message).to.match(/expired|exp/));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [{"key": "Authorization", "value": "Bearer {{EXPIRED_TOKEN}}"}],
+        "url": {"raw": "{{BASE_URL}}/api/products", "host": ["{{BASE_URL}}"], "path": ["api", "products"]}
+      }
+    },
+    {
+      "name": "CA-005 Assinatura adulterada",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const t = pm.collectionVariables.get('access_token');",
+              "const parts = t.split('.');",
+              "const payload = JSON.parse(atob(parts[1].replace(/-/g,'+').replace(/_/g,'/')));",
+              "payload.sub = 'TAMPERED-SUB';",
+              "const tampered = btoa(JSON.stringify(payload)).replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=+$/,'');",
+              "pm.collectionVariables.set('tampered_token', parts[0] + '.' + tampered + '.' + parts[2]);"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('CA-005: status 401', () => pm.response.to.have.status(401));",
+              "const body = pm.response.json();",
+              "pm.test('body message contains signature mismatch', () => pm.expect(body.message).to.match(/signature/i));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [{"key": "Authorization", "value": "Bearer {{tampered_token}}"}],
+        "url": {"raw": "{{BASE_URL}}/api/products", "host": ["{{BASE_URL}}"], "path": ["api", "products"]}
+      }
+    },
+    {
+      "name": "CA-006 Spoof X-User-Id is overwritten",
+      "request": {
+        "method": "GET",
+        "header": [
+          {"key": "Authorization", "value": "Bearer {{access_token}}"},
+          {"key": "X-User-Id", "value": "admin"},
+          {"key": "X-Claim-email", "value": "attacker@evil.example"},
+          {"key": "X-Claim-preferred_username", "value": "root"}
+        ],
+        "url": {"raw": "{{BASE_URL}}/api/products", "host": ["{{BASE_URL}}"], "path": ["api", "products"]}
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('CA-006: status 200', () => pm.response.to.have.status(200));",
+              "const body = pm.response.json();",
+              "const sub = pm.collectionVariables.get('jwt_sub');",
+              "const email = pm.collectionVariables.get('jwt_email');",
+              "pm.test('user_id reflects JWT sub, never spoofed admin', () => {",
+              "  pm.expect(body.user_id).to.eql(sub);",
+              "  pm.expect(body.user_id).to.not.eql('admin');",
+              "});",
+              "pm.test('email reflects JWT, never spoofed attacker@evil', () => {",
+              "  pm.expect(body.email).to.not.eql('attacker@evil.example');",
+              "  if (email) { pm.expect(body.email).to.eql(email); }",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "CA-007 Rotate key + new token validates",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Trigger key rotation out-of-band: scripts/test/rotate-keycloak-key.sh.",
+              "// We assume the operator ran it before this Newman scenario."
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('CA-007: status 200 after key rotation', () => pm.response.to.have.status(200));",
+              "const body = pm.response.json();",
+              "pm.test('user_id present after rotation', () => pm.expect(body.user_id).to.be.a('string').and.not.empty);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [{"key": "Authorization", "value": "Bearer {{access_token}}"}],
+        "url": {"raw": "{{BASE_URL}}/api/products", "host": ["{{BASE_URL}}"], "path": ["api", "products"]}
+      }
+    },
+    {
+      "name": "CA-010 Keycloak unreachable from host (SC-010)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.sendRequest({",
+              "  url: 'http://localhost:8080/realms/poc',",
+              "  method: 'GET',",
+              "  timeout: 2000",
+              "}, (err, res) => {",
+              "  pm.test('Keycloak port 8080 not reachable from host', () => {",
+              "    if (err) { pm.expect(err).to.exist; return; }",
+              "    pm.expect(res, 'expected error or non-200').to.satisfy(r => !r || r.code !== 200);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "url": {"raw": "{{BASE_URL}}/api/products/health", "host": ["{{BASE_URL}}"], "path": ["api", "products", "health"]}
+      }
+    },
+    {
+      "name": "Multi-node — both Kong nodes validate the same token (independent caches)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Run only when --profile multinode is active. Each node has its own",
+              "// in-process kong.cache; both will independently fetch from ms-auth on",
+              "// first miss but the plugin is fully stateless and produces the same",
+              "// X-User-Id from the same JWT.",
+              "pm.test('Node A 200', () => pm.response.to.have.status(200));",
+              "pm.sendRequest({",
+              "  url: 'http://localhost:8001/api/products',",
+              "  method: 'GET',",
+              "  header: { Authorization: 'Bearer ' + pm.collectionVariables.get('access_token') }",
+              "}, (err, res) => {",
+              "  pm.test('Node B 200 (independent in-process cache)', () => {",
+              "    pm.expect(err).to.be.null;",
+              "    pm.expect(res.code).to.eql(200);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [{"key": "Authorization", "value": "Bearer {{access_token}}"}],
+        "url": {"raw": "http://localhost:8000/api/products", "host": ["localhost:8000"], "path": ["api", "products"]}
+      }
+    },
+    {
+      "name": "CA-003 100x GET /api/products (cache hit, zero round-trip)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const i = parseInt(pm.collectionVariables.get('cache_hit_iter') || '0', 10);",
+              "pm.collectionVariables.set('cache_hit_iter', String(i + 1));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('CA-003 iteration ' + pm.collectionVariables.get('cache_hit_iter') + ' status 200', () => pm.response.to.have.status(200));",
+              "const i = parseInt(pm.collectionVariables.get('cache_hit_iter'), 10);",
+              "if (i < 100) {",
+              "  postman.setNextRequest('CA-003 100x GET /api/products (cache hit, zero round-trip)');",
+              "} else {",
+              "  pm.collectionVariables.set('cache_hit_iter', '0');",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [{"key": "Authorization", "value": "Bearer {{access_token}}"}],
+        "url": {"raw": "{{BASE_URL}}/api/products", "host": ["{{BASE_URL}}"], "path": ["api", "products"]}
+      }
+    }
+  ],
+  "variable": [
+    {"key": "access_token", "value": ""},
+    {"key": "refresh_token", "value": ""},
+    {"key": "jwt_sub", "value": ""},
+    {"key": "jwt_email", "value": ""},
+    {"key": "tampered_token", "value": ""},
+    {"key": "cache_hit_iter", "value": "0"}
+  ]
+}

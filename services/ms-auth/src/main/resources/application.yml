@@ -1,0 +1,43 @@
+server:
+  port: 8080
+  forward-headers-strategy: framework
+
+spring:
+  application:
+    name: ms-auth
+  threads:
+    virtual:
+      enabled: true
+  cache:
+    type: caffeine
+    cache-names: jwks
+    caffeine:
+      spec: maximumSize=8,expireAfterWrite=60s
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+  tracing:
+    enabled: false
+
+keycloak:
+  base-url: ${KC_HOSTNAME_URL:http://keycloak:8080}
+  realm: ${MS_AUTH_KEYCLOAK_REALM:poc}
+  client-id: ${MS_AUTH_KEYCLOAK_CLIENT_ID:poc-client}
+
+ms-auth:
+  http:
+    connect-timeout-ms: 1000
+    read-timeout-ms: 3000
+
+logging:
+  level:
+    root: INFO
+    com.poc.msauth: INFO

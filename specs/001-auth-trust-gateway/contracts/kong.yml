@@ -1,0 +1,100 @@
+_format_version: "3.0"
+_transform: true
+
+#
+# Kong DB-less declarative configuration for the Auth Trust Gateway POC.
+#
+# Loaded by Kong via:
+#   KONG_DATABASE=off
+#   KONG_DECLARATIVE_CONFIG=/usr/local/kong/declarative/kong.yml
+#
+# The custom plugin `jwt-keycloak-validator` is loaded via:
+#   KONG_PLUGINS=bundled,jwt-keycloak-validator
+#   KONG_LUA_PACKAGE_PATH=/opt/kong/plugins/?.lua;/opt/kong/plugins/?/init.lua;;
+#
+# Source of truth for routing decisions in the POC. Edit here, then run
+#   docker compose restart kong
+# (Kong reloads declarative config without DB).
+#
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Public auth endpoints — exposed without JWT validation.
+  # /auth/login  | /auth/refresh | /auth/jwks (the JWKS proxy is reachable
+  # from the gateway side; in production this route may be restricted to the
+  # internal network only).
+  # ---------------------------------------------------------------------------
+  - name: ms-auth
+    url: http://ms-auth:8080
+    routes:
+      - name: auth-public
+        paths:
+          - /auth
+        strip_path: false
+
+  # ---------------------------------------------------------------------------
+  # Protected products API — JWT validation enforced by custom plugin.
+  # ---------------------------------------------------------------------------
+  - name: ms-products
+    url: http://ms-products:8080
+    routes:
+      - name: products-protected
+        paths:
+          - /api/products
+        strip_path: true                  # /api/products → /products upstream
+        plugins:
+          - name: jwt-keycloak-validator
+            config:
+              jwks_url: http://ms-auth:8080/auth/jwks
+              issuer: http://keycloak:8080/realms/poc
+              algorithm: RS256
+              cache_ttl: 3600
+              negative_cache_ttl: 30
+              user_id_claim: sub
+              user_id_header: X-User-Id
+              forward_claims:
+                - preferred_username
+                - email
+              strip_client_headers: true   # FR-010 anti-spoofing
+              # audience: poc-client       # uncomment to enforce aud
+
+  # ---------------------------------------------------------------------------
+  # Protected payments API — same plugin, same config.
+  # ---------------------------------------------------------------------------
+  - name: ms-payments
+    url: http://ms-payments:8080
+    routes:
+      - name: payments-protected
+        paths:
+          - /api/payments
+        strip_path: true                  # /api/payments → /payments upstream
+        plugins:
+          - name: jwt-keycloak-validator
+            config:
+              jwks_url: http://ms-auth:8080/auth/jwks
+              issuer: http://keycloak:8080/realms/poc
+              algorithm: RS256
+              cache_ttl: 3600
+              negative_cache_ttl: 30
+              user_id_claim: sub
+              user_id_header: X-User-Id
+              forward_claims:
+                - preferred_username
+                - email
+              strip_client_headers: true
+
+  # ---------------------------------------------------------------------------
+  # Optional health check passthrough — useful for smoke tests.
+  # ---------------------------------------------------------------------------
+  - name: ms-products-health
+    url: http://ms-products:8080
+    routes:
+      - name: products-health
+        paths:
+          - /api/products/health
+        strip_path: true
+
+# Global plugins (none for POC). Add prometheus here when ready:
+# plugins:
+#   - name: prometheus

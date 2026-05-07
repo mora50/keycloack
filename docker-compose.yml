@@ -1,0 +1,193 @@
+# =============================================================================
+# Auth Trust Gateway — POC Docker Compose
+# Spec: specs/001-auth-trust-gateway/spec.md
+# Quickstart: specs/001-auth-trust-gateway/quickstart.md
+# =============================================================================
+
+name: auth-trust-gateway
+
+networks:
+  poc:
+    driver: bridge
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # FR-015 — Keycloak invisible from the host. NEVER add `ports:` here.
+  # SC-010 verification: `curl http://localhost:8080/realms/poc` must fail
+  # from outside the Compose network.
+  # ---------------------------------------------------------------------------
+  keycloak:
+    build:
+      context: ./keycloak
+    image: poc/keycloak:26.6.1
+    environment:
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      KC_HOSTNAME_URL: ${KC_HOSTNAME_URL:-http://keycloak:8080}
+      KC_HOSTNAME_STRICT: "false"
+      KC_HTTP_ENABLED: "true"
+      KC_HEALTH_ENABLED: "true"
+    expose:
+      - "8080"
+    networks: [poc]
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/9000 && echo -e 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && cat <&3 | head -1 | grep -q 200"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  ms-auth:
+    build:
+      context: ./services/ms-auth
+    image: poc/ms-auth:0.1.0
+    environment:
+      KC_HOSTNAME_URL: ${KC_HOSTNAME_URL:-http://keycloak:8080}
+      MS_AUTH_KEYCLOAK_REALM: ${MS_AUTH_KEYCLOAK_REALM:-poc}
+      MS_AUTH_KEYCLOAK_CLIENT_ID: ${MS_AUTH_KEYCLOAK_CLIENT_ID:-poc-client}
+    expose:
+      - "8080"
+    networks: [poc]
+    depends_on:
+      keycloak:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:8080/actuator/health | grep -q '\"status\":\"UP\"'"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+
+  ms-products:
+    build:
+      context: ./services/ms-products
+    image: poc/ms-products:0.1.0
+    expose:
+      - "8080"
+    networks: [poc]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:8080/actuator/health | grep -q '\"status\":\"UP\"'"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+
+  ms-payments:
+    build:
+      context: ./services/ms-payments
+    image: poc/ms-payments:0.1.0
+    expose:
+      - "8080"
+    networks: [poc]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:8080/actuator/health | grep -q '\"status\":\"UP\"'"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+
+  kong:
+    build:
+      context: ./kong
+    image: poc/kong:3.9.1
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /usr/local/kong/declarative/kong.yml
+      KONG_PLUGINS: ${KONG_PLUGINS:-bundled,jwt-keycloak-validator}
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_ACCESS_LOG: /dev/stdout
+      KONG_ADMIN_ERROR_LOG: /dev/stderr
+      KONG_PROXY_LISTEN: "0.0.0.0:8000 reuseport backlog=16384"
+      KONG_ADMIN_LISTEN: "0.0.0.0:8001"
+      KONG_LOG_LEVEL: notice
+    ports:
+      - "8000:8000"   # único endpoint público da POC
+    networks: [poc]
+    volumes:
+      - ./kong/kong.yml:/usr/local/kong/declarative/kong.yml:ro
+      - ./kong/plugins/jwt-keycloak-validator:/usr/local/share/lua/5.1/kong/plugins/jwt-keycloak-validator:ro
+    depends_on:
+      ms-auth:
+        condition: service_healthy
+      ms-products:
+        condition: service_healthy
+      ms-payments:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  # ---------------------------------------------------------------------------
+  # Optional React POC frontend — enable with: docker compose --profile frontend up
+  # Open http://localhost:3000 once Kong is healthy.
+  # The bundle is built with VITE_API_BASE=http://localhost:8000 so the browser
+  # talks to Kong directly; CORS is enabled globally in kong.yml.
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE: ${VITE_API_BASE:-http://localhost:8000}
+    image: poc/frontend:0.1.0
+    profiles: [frontend]
+    ports:
+      - "3000:3000"
+    networks: [poc]
+    depends_on:
+      kong:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:3000 >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # Optional second Kong node — enable with --profile multinode.
+  # Each node keeps its own in-process JWKS cache (kong.cache); they do NOT
+  # share state. Useful to demo that the plugin is fully stateless and that
+  # horizontal scaling Just Works (each node pays at most one ms-auth fetch
+  # per kid per cache TTL, independently of the other nodes).
+  # ---------------------------------------------------------------------------
+  kong-b:
+    build:
+      context: ./kong
+    image: poc/kong:3.9.1
+    profiles: [multinode]
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /usr/local/kong/declarative/kong.yml
+      KONG_PLUGINS: bundled,jwt-keycloak-validator
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      KONG_PROXY_LISTEN: "0.0.0.0:8000"
+      KONG_ADMIN_LISTEN: "0.0.0.0:8001"
+      KONG_LOG_LEVEL: notice
+    ports:
+      - "8001:8000"
+    networks: [poc]
+    volumes:
+      - ./kong/kong.yml:/usr/local/kong/declarative/kong.yml:ro
+      - ./kong/plugins/jwt-keycloak-validator:/usr/local/share/lua/5.1/kong/plugins/jwt-keycloak-validator:ro
+    depends_on:
+      ms-auth:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+# Annotations for future Prometheus scraping (research.md R15 — deferred from POC).
+# scrape paths:
+#   ms-auth:    GET /actuator/prometheus
+#   ms-products: GET /actuator/prometheus
+#   ms-payments: GET /actuator/prometheus
+#   kong:       GET /metrics  (after enabling the bundled `prometheus` plugin globally)

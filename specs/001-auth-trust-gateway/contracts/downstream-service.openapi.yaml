@@ -1,0 +1,137 @@
+openapi: 3.0.3
+info:
+  title: Downstream microservices — ms-products & ms-payments
+  version: 0.1.0
+  description: |
+    Microsserviços de exemplo. Confiam EXCLUSIVAMENTE no header `X-User-Id`
+    injetado pelo Kong via plugin `jwt-keycloak-validator`. NÃO validam JWT.
+    Toda chamada deve chegar via Kong (rotas `/api/*` ⇒ plugin obrigatório).
+
+servers:
+  - url: http://ms-products:8080
+    description: ms-products na rede interna
+  - url: http://ms-payments:8080
+    description: ms-payments na rede interna
+  - url: http://localhost:8000
+    description: Via Kong (cliente externo) — rotas /api/products, /api/payments
+
+paths:
+  /products:
+    get:
+      operationId: listProducts
+      summary: Lista produtos para o usuário identificado
+      parameters:
+        - $ref: '#/components/parameters/XUserId'
+        - $ref: '#/components/parameters/XClaimEmail'
+        - $ref: '#/components/parameters/XClaimUsername'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user_id, products]
+                properties:
+                  user_id:
+                    type: string
+                    description: Echoed from X-User-Id (the contract being validated)
+                    example: 6c8a1234-5678-90ab-cdef-1234567890ab
+                  email:
+                    type: string
+                    nullable: true
+                    example: alice@example.com
+                  preferred_username:
+                    type: string
+                    nullable: true
+                    example: alice
+                  products:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:   { type: string, example: P-001 }
+                        name: { type: string, example: "Demo Product" }
+        '400':
+          $ref: '#/components/responses/MissingXUserId'
+
+  /payments:
+    post:
+      operationId: createPayment
+      summary: Cria pagamento (eco) para o usuário identificado
+      parameters:
+        - $ref: '#/components/parameters/XUserId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount, currency]
+              properties:
+                amount:   { type: number, format: double, example: 99.90 }
+                currency: { type: string, example: BRL }
+      responses:
+        '200':
+          description: Aceito
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user_id, payment_id, status]
+                properties:
+                  user_id:    { type: string }
+                  payment_id: { type: string, example: 4b3a... }
+                  status:     { type: string, enum: [accepted] }
+        '400':
+          $ref: '#/components/responses/MissingXUserId'
+
+  /actuator/health:
+    get:
+      operationId: health
+      summary: Liveness/readiness
+      responses:
+        '200':
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: UP }
+
+components:
+  parameters:
+    XUserId:
+      name: X-User-Id
+      in: header
+      required: true
+      description: |
+        Identidade injetada pelo Kong a partir do claim `sub` do JWT validado.
+        SEMPRE confiável quando o request vem via Kong.
+        Headers de identidade vindos do cliente são REMOVIDOS pelo gateway antes da injeção.
+      schema:
+        type: string
+        format: uuid
+    XClaimEmail:
+      name: X-Claim-email
+      in: header
+      required: false
+      schema: { type: string }
+    XClaimUsername:
+      name: X-Claim-preferred_username
+      in: header
+      required: false
+      schema: { type: string }
+
+  responses:
+    MissingXUserId:
+      description: |
+        Defesa em profundidade — só ocorre se alguém burlar o Kong e bater direto
+        no microsserviço sem header. Em operação normal, o gateway garante presença.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error: { type: string, example: missing_x_user_id }

@@ -1,0 +1,84 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    background:
+      radial-gradient(circle at 15% -10%, rgba(58, 102, 246, 0.18), transparent 55%),
+      radial-gradient(circle at 95% 0%, rgba(168, 85, 247, 0.12), transparent 50%),
+      #020617;
+    min-height: 100vh;
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-2xl border border-white/5 bg-white/[0.03] backdrop-blur-sm shadow-glow;
+  }
+
+  .card-padded {
+    @apply card p-6;
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .btn-primary {
+    @apply btn bg-gateway-500 text-white hover:bg-gateway-400 shadow-lg shadow-gateway-500/20;
+  }
+
+  .btn-secondary {
+    @apply btn bg-white/10 text-slate-100 hover:bg-white/20;
+  }
+
+  .btn-danger {
+    @apply btn bg-rose-500/90 text-white hover:bg-rose-400;
+  }
+
+  .pill {
+    @apply inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium ring-1 ring-inset;
+  }
+
+  .pill-success {
+    @apply pill bg-emerald-500/10 text-emerald-300 ring-emerald-400/30;
+  }
+
+  .pill-danger {
+    @apply pill bg-rose-500/10 text-rose-300 ring-rose-400/30;
+  }
+
+  .pill-info {
+    @apply pill bg-gateway-500/10 text-gateway-200 ring-gateway-400/30;
+  }
+
+  .pill-muted {
+    @apply pill bg-white/5 text-slate-300 ring-white/10;
+  }
+
+  .input {
+    @apply w-full rounded-lg border border-white/10 bg-slate-900/60 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-gateway-400 focus:outline-none focus:ring-2 focus:ring-gateway-500/40;
+  }
+
+  .label {
+    @apply mb-1.5 block text-xs font-medium uppercase tracking-wide text-slate-400;
+  }
+
+  .code-block {
+    @apply font-mono text-[12.5px] leading-relaxed text-slate-200;
+  }
+}
+
+.scrollbar-thin {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.3) transparent;
+}
+.scrollbar-thin::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background-color: rgba(148, 163, 184, 0.3);
+  border-radius: 999px;
+}

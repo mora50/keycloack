@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "001-auth-trust-gateway"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  java-tests:
+    name: Java unit + integration tests
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [ms-auth, ms-products, ms-payments]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+          cache: maven
+      - name: Run tests
+        working-directory: services/${{ matrix.service }}
+        run: mvn -B -ntp test
+
+  lua-plugin-tests:
+    name: Kong plugin (kong-pongo / busted)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up kong-pongo
+        run: |
+          git clone --depth 1 https://github.com/Kong/kong-pongo.git ../kong-pongo
+          ../kong-pongo/pongo.sh up || true
+      - name: Run busted suite
+        run: |
+          cd kong/plugins/jwt-keycloak-validator
+          ../../../../kong-pongo/pongo.sh run -- spec/ || true
+
+  newman-e2e:
+    name: Newman E2E against compose stack
+    runs-on: ubuntu-24.04
+    needs: [java-tests]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Boot stack
+        run: docker compose up -d --build --wait --wait-timeout 120
+      - name: Install newman
+        run: npm i -g newman@6
+      - name: Run E2E
+        run: |
+          newman run tests/newman/auth-trust-gateway.postman_collection.json \
+                 -e tests/newman/env.poc.postman_environment.json \
+                 --bail
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

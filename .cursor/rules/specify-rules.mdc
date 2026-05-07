@@ -1,0 +1,89 @@
+---
+description: Project Development Guidelines
+globs: ["**/*"]
+alwaysApply: true
+---
+
+# keycloack Development Guidelines
+
+Auto-generated from all feature plans. Last updated: 2026-05-04
+
+## Active Technologies
+
+- **Backend services** (`ms-auth`, `ms-products`, `ms-payments`): Java 25 (LTS) + Spring Boot 4.0.6 (Spring MVC + virtual threads)
+- **Kong custom plugin** (`jwt-keycloak-validator`): Lua 5.1 / LuaJIT — Kong OSS 3.9.1
+- **IdP**: Keycloak 26.6.1 (`quay.io/keycloak/keycloak:26.6.1`), `start-dev --import-realm`
+- **Plugin cache**: `kong.cache` em-processo (L1 worker LRU + L2 nginx shared dict). Sem cache externo.
+- **Orchestration**: Docker Compose v2
+- **Build (Java)**: Maven (per-service `pom.xml`)
+- **Java HTTP client**: Spring `RestClient` + `@HttpExchange` interfaces
+- **In-process cache (ms-auth JWKS)**: Caffeine (TTL 60s)
+- **Tests — Java**: JUnit 5 + Mockito + AssertJ; Testcontainers (Keycloak module) for integration
+- **Tests — Lua**: busted + kong-pongo
+- **Tests — E2E / load**: Newman 6.x; k6 0.51+
+
+## Project Structure
+
+```text
+docker-compose.yml
+kong/
+├── kong.yml                                # DB-less declarative config
+└── plugins/jwt-keycloak-validator/         # custom Lua plugin
+    ├── handler.lua  schema.lua  jwks.lua  cache.lua
+    └── spec/                                # busted unit tests
+keycloak/
+└── realm-export/poc-realm.json             # realm + client + alice user
+services/
+├── ms-auth/        (Spring Boot — login, refresh, JWKS proxy)
+├── ms-products/    (Spring Boot — echoes X-User-Id)
+└── ms-payments/    (Spring Boot — echoes X-User-Id)
+tests/
+├── newman/         (Postman E2E covering CA-001..CA-009)
+└── k6/             (load + chaos)
+specs/
+└── 001-auth-trust-gateway/   (spec, plan, research, data-model, contracts, quickstart)
+```
+
+## Commands
+
+```bash
+docker compose up -d --build                                  # full stack (≤60s)
+docker compose --profile multinode up -d --build              # second Kong node on :8001 (independent in-process caches)
+docker compose down -v                                        # tear down + reset
+
+# Java (per service)
+./mvnw -pl services/ms-auth test                              # unit + integration (Testcontainers)
+./mvnw -pl services/ms-auth spring-boot:run                   # local run (without Compose)
+
+# Kong plugin
+docker compose exec kong /usr/local/bin/pongo run             # busted suite via kong-pongo
+
+# E2E + load
+npx newman run tests/newman/auth-trust-gateway.postman_collection.json \
+  -e tests/newman/env.poc.postman_environment.json --bail
+k6 run tests/k6/load-authenticated-route.js \
+  --env BASE_URL=http://localhost:8000 --env USERNAME=alice --env PASSWORD=alice
+bash tests/k6/chaos-msauth-down.sh
+```
+
+## Code Style
+
+- **Java**: Java 25 features OK (records, pattern matching, virtual threads). Prefer immutable DTOs (`record`). Use Spring `@HttpExchange` for outbound HTTP. Logback JSON via `logstash-logback-encoder`. No `RestTemplate` in new code.
+- **Lua plugin**: Local `require` at top of file. No globals. Use `kong.log.warn/err/info` (never `print`). All cache keys prefixed with `jwks:<issuer>:`. Never log token contents.
+- **YAML / Compose**: `expose:` (not `ports:`) for everything except Kong proxy port `8000`. Healthchecks on every service.
+- **Tests**: Mirror `CA-NNN` IDs from spec in test names so traceability is greppable (`CA-006_spoofed_xuserid_is_overwritten`).
+
+## Architectural Invariants (do NOT violate)
+
+- The end client never reaches Keycloak directly. `keycloak` service has **no** `ports:` mapping (FR-015 / SC-010).
+- Kong **always** runs `jwt-keycloak-validator` with `strip_client_headers: true` on every protected route (FR-010 / SC-005).
+- Microservices downstream **never** validate JWTs themselves. They trust `X-User-Id` from Kong only (FR-014).
+- The Kong plugin **never** calls Keycloak directly — only `http://ms-auth:8080/auth/jwks` (FR-005).
+
+## Recent Changes
+
+- 001-auth-trust-gateway: Spec + plan + research + data-model + contracts + quickstart added.
+- 001-auth-trust-gateway: Removed optional Redis shared-cache layer (former US6) and `cache_strategy`/`redis_*` plugin config. `cache.lua` now uses `kong.cache` only — see `research.md` R7.
+
+<!-- MANUAL ADDITIONS START -->
+<!-- MANUAL ADDITIONS END -->

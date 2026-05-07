@@ -1,0 +1,233 @@
+openapi: 3.0.3
+info:
+  title: ms-auth — Authentication BFF
+  version: 0.1.0
+  description: |
+    BFF de autenticação. Único componente que conversa com o Keycloak.
+    Expõe login, refresh e proxy do JWKS para o gateway.
+    Stateless. Não persiste sessão nem usuários.
+
+servers:
+  - url: http://ms-auth:8080
+    description: Rede interna do docker-compose (visto pelo Kong)
+  - url: http://localhost:8000
+    description: Cliente externo, via Kong (rotas públicas montadas em /auth)
+
+tags:
+  - name: auth
+    description: Endpoints públicos de autenticação (sem plugin de validação no Kong)
+  - name: jwks
+    description: Proxy do JWKS para uso interno do gateway
+
+paths:
+  /auth/login:
+    post:
+      tags: [auth]
+      operationId: login
+      summary: Autentica usuário com username + password
+      description: |
+        Encaminha credenciais ao Keycloak (grant_type=password) e devolve par
+        access/refresh tokens JWT. Sanitiza a resposta (remove `id_token`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            examples:
+              alice:
+                value:
+                  username: alice
+                  password: alice
+      responses:
+        '200':
+          description: Autenticação bem-sucedida
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '400':
+          description: Payload inválido (campos vazios, formato errado)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: invalid_request
+                error_description: "username must not be blank"
+        '401':
+          description: Credenciais inválidas (mascarado para evitar user enumeration)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: invalid_credentials
+        '503':
+          description: Keycloak indisponível
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: idp_unavailable
+
+  /auth/refresh:
+    post:
+      tags: [auth]
+      operationId: refresh
+      summary: Renova access/refresh tokens a partir de um refresh_token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+      responses:
+        '200':
+          description: Renovação bem-sucedida
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '400':
+          description: Payload inválido
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Refresh token inválido ou expirado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: invalid_refresh_token
+        '503':
+          description: Keycloak indisponível
+
+  /auth/jwks:
+    get:
+      tags: [jwks]
+      operationId: getJwks
+      summary: Proxy idempotente do JWKS do Keycloak
+      description: |
+        Resposta em formato RFC 7517 (JWK Set). Cacheado internamente
+        no ms-auth com TTL ~60s para não martelar o Keycloak.
+        Consumido apenas pelo plugin do Kong; não pelo cliente final.
+      responses:
+        '200':
+          description: JWKS atual
+          headers:
+            Cache-Control:
+              description: Diretivas de cache repassadas ao gateway
+              schema:
+                type: string
+                example: "public, max-age=60"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JwksResponse'
+        '503':
+          description: Keycloak indisponível e cache vazio
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /actuator/health:
+    get:
+      tags: [auth]
+      operationId: health
+      summary: Liveness/readiness do ms-auth
+      responses:
+        '200':
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: UP }
+
+components:
+  schemas:
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+          minLength: 1
+          example: alice
+        password:
+          type: string
+          format: password
+          minLength: 1
+          example: alice
+
+    RefreshRequest:
+      type: object
+      required: [refresh_token]
+      properties:
+        refresh_token:
+          type: string
+          minLength: 1
+
+    TokenResponse:
+      type: object
+      required: [access_token, refresh_token, token_type, expires_in]
+      properties:
+        access_token:
+          type: string
+          description: JWT RS256 emitido pelo Keycloak
+          example: eyJhbGciOiJSUzI1NiIsImtpZCI6ImExYjJjMyJ9.eyJzdWIiOiIuLi4ifQ.SGI-...
+        refresh_token:
+          type: string
+          description: Token opaco (estruturalmente JWT, tratado como opaco pelo cliente)
+        token_type:
+          type: string
+          enum: [Bearer]
+        expires_in:
+          type: integer
+          description: Segundos até expiração do access_token
+          example: 300
+        refresh_expires_in:
+          type: integer
+          example: 1800
+
+    JwksResponse:
+      type: object
+      required: [keys]
+      properties:
+        keys:
+          type: array
+          items:
+            $ref: '#/components/schemas/Jwk'
+
+    Jwk:
+      type: object
+      required: [kid, kty, alg, use, n, e]
+      properties:
+        kid: { type: string, example: a1b2c3 }
+        kty: { type: string, enum: [RSA] }
+        alg: { type: string, enum: [RS256, RS384, RS512] }
+        use: { type: string, enum: [sig] }
+        n:   { type: string, description: Modulus (base64url) }
+        e:   { type: string, description: Exponent (base64url), example: AQAB }
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          enum:
+            - invalid_request
+            - invalid_credentials
+            - invalid_refresh_token
+            - idp_unavailable
+        error_description:
+          type: string
+          description: Mensagem opcional, segura para logging
